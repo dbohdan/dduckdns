@@ -27,6 +27,9 @@ DUCKDNS_URL = URL("https://www.duckdns.org/update")
 CONFIG_FILE = DIRS.user_config_path / "config.toml"
 IPV6_URL = "https://ipv6.icanhazip.com"
 
+VERBOSITY_LOGGING_DEBUG = 1
+VERBOSITY_DUCKDNS_VERBOSE = 2
+
 
 class DomainSettings(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
     clear: bool = False
@@ -68,7 +71,7 @@ def duckdns(
         url = url.update_query(verbose="true")
 
     log = structlog.get_logger()
-    log.debug("Making Duck DNS request", url=url.update_query(token="redacted"))
+    log.debug("Making Duck DNS request", url=url.update_query(token="redacted"))  # noqa: S106
     text = httpx.get(str(url)).text.strip()
     log.debug("Got Duck DNS response", text=text)
 
@@ -77,7 +80,7 @@ def duckdns(
         raise ValueError(msg)
 
 
-def configure_logging(verbose: bool) -> None:
+def configure_logging(verbosity: int) -> None:
     if sys.stderr.isatty():
         processors = [
             structlog.dev.ConsoleRenderer(
@@ -93,7 +96,7 @@ def configure_logging(verbose: bool) -> None:
     structlog.configure(
         processors,
         wrapper_class=structlog.make_filtering_bound_logger(
-            logging.DEBUG if verbose else logging.INFO,
+            logging.DEBUG if verbosity >= VERBOSITY_LOGGING_DEBUG else logging.INFO,
         ),
     )
 
@@ -103,7 +106,9 @@ def main() -> None:
     parser.add_argument(
         "-v",
         "--verbose",
-        action="store_true",
+        action="count",
+        default=0,
+        dest="verbosity",
         help="print debug information",
     )
     args = parser.parse_args()
@@ -111,13 +116,18 @@ def main() -> None:
     config = msgspec.toml.decode(CONFIG_FILE.read_text(), type=Config)
     token = sp.check_output(config.token_command, text=True).strip()
 
-    configure_logging(args.verbose)
+    configure_logging(args.verbosity)
     log = structlog.get_logger()
 
     exit_status = 0
     for domain, settings in config.domains.items():
         try:
-            duckdns(token, domain, settings, verbose=args.verbose)
+            duckdns(
+                token,
+                domain,
+                settings,
+                verbose=args.verbosity >= VERBOSITY_DUCKDNS_VERBOSE,
+            )
 
         except (httpx.HTTPError, ValueError):
             exit_status = 1
