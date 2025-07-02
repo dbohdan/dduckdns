@@ -39,10 +39,6 @@ class Config(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
     domains: dict[str, DomainSettings]
 
 
-def boolean(value: bool) -> str:
-    return "true" if value else "false"
-
-
 def get_ipv6() -> str:
     ipv6 = httpx.get(IPV6_URL).text.strip()
 
@@ -60,20 +56,23 @@ def duckdns(
     verbose: bool = False,
 ) -> None:
     url = DUCKDNS_URL.with_query(
-        clear=boolean(settings.clear),
         domains=domain,
         ip=settings.ip,
         ipv6=get_ipv6() if settings.ipv6 == "auto" else settings.ipv6,
         token=token,
-        verbose=boolean(verbose),
     )
+    if settings.clear:
+        url = url.update_query(clear="true")
+    # The key `verbose` with any value causes a verbose reponse.
+    if verbose:
+        url = url.update_query(verbose="true")
 
     log = structlog.get_logger()
     log.debug("Making Duck DNS request", url=url.update_query(token="redacted"))
     text = httpx.get(str(url)).text.strip()
     log.debug("Got Duck DNS response", text=text)
 
-    if not re.match(r"^OK\n", text):
+    if not re.match(r"^OK(?:\n|$)", text):
         msg = f"Unexpected response: {text!r}"
         raise ValueError(msg)
 
@@ -118,7 +117,7 @@ def main() -> None:
     exit_status = 0
     for domain, settings in config.domains.items():
         try:
-            duckdns(token, domain, settings)
+            duckdns(token, domain, settings, verbose=args.verbose)
 
         except (httpx.HTTPError, ValueError):
             exit_status = 1
