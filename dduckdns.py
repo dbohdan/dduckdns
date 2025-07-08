@@ -15,6 +15,7 @@ import logging
 import re
 import subprocess as sp
 import sys
+from pathlib import Path
 
 import httpx
 import msgspec
@@ -23,8 +24,9 @@ from platformdirs import PlatformDirs
 from yarl import URL
 
 DIRS = PlatformDirs("dduckdns", "dbohdan")
+DEFAULT_CONFIG_FILE = DIRS.user_config_path / "config.toml"
+
 DUCKDNS_URL = URL("https://www.duckdns.org/update")
-CONFIG_FILE = DIRS.user_config_path / "config.toml"
 IPV6_URL = "https://ipv6.icanhazip.com"
 
 VERBOSITY_LOGGING_DEBUG = 1
@@ -104,6 +106,13 @@ def configure_logging(verbosity: int) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        "-c",
+        "--config",
+        default=DEFAULT_CONFIG_FILE,
+        type=Path,
+        help=f"config file path (default: {str(DEFAULT_CONFIG_FILE)!r})",
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="count",
@@ -113,7 +122,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = msgspec.toml.decode(CONFIG_FILE.read_text(), type=Config)
+    config = msgspec.toml.decode(args.config.read_text(), type=Config)
     token = sp.check_output(config.token_command, text=True).strip()
 
     configure_logging(args.verbosity)
