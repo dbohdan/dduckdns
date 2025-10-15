@@ -1,5 +1,11 @@
 #! /usr/bin/env python3
 
+# SPDX-FileCopyrightText: 2025 D. Bohdan
+# SPDX-License-Identifier: MIT
+#
+# dduckdns - A client for the Duck DNS dynamic DNS service
+# https://github.com/dbohdan/dduckdns
+
 import argparse
 import json
 import logging
@@ -34,6 +40,7 @@ def xdg_config_home() -> Path:
 
 APP_NAME = "dduckdns"
 DEFAULT_CONFIG_FILE = xdg_config_home() / APP_NAME / "config.toml"
+VERSION = "0.2.0"
 
 DUCKDNS_URL = "https://www.duckdns.org/update"
 IPV6_URL = "https://ipv6.icanhazip.com"
@@ -140,6 +147,13 @@ def configure_logging(verbosity: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"dduckdns {VERSION}",
+        help="show version information and exit",
+    )
     parser.add_argument(
         "-c",
         "--config",
