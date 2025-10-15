@@ -3,6 +3,10 @@
 **dduckdns** is a client for the [Duck DNS](https://www.duckdns.org/) dynamic DNS service.
 dduckdns is implemented as a single-file Python script with no dependencies besides the Python standard library.
 
+## Requirements
+
+- Python 3.11 or later (for [`tomllib`](https://docs.python.org/3.11/library/tomllib.html))
+
 ## Configuration
 
 dduckdns is configured using a TOML file.
