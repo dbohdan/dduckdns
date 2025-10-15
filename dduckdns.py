@@ -1,54 +1,67 @@
-#! /usr/bin/env -S uv run --script --quiet
-# /// script
-# dependencies = [
-#   "httpx >= 0.28, < 2",
-#   "msgspec >= 0.19, < 2",
-#   "platformdirs >= 4, < 5",
-#   "structlog >= 25, < 26",
-#   "yarl >= 1, < 2",
-# ]
-# requires-python = ">= 3.11"
-# ///
+#! /usr/bin/env python3
 
 import argparse
+import json
 import logging
+import os
 import re
 import subprocess as sp
 import sys
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.error import URLError
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
-import httpx
-import msgspec
-import structlog
-from platformdirs import PlatformDirs
-from yarl import URL
 
-DIRS = PlatformDirs("dduckdns", "dbohdan")
-DEFAULT_CONFIG_FILE = DIRS.user_config_path / "config.toml"
+def xdg_config_home() -> Path:
+    if env_var := os.environ.get("XDG_CONFIG_HOME"):
+        return Path(env_var)
 
-DUCKDNS_URL = URL("https://www.duckdns.org/update")
+    # Handle Windows.
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+
+        if appdata:
+            return Path(appdata)
+
+        return Path.home() / "AppData" / "Roaming"
+
+    # POSIX systems.
+    return Path.home() / ".config"
+
+
+APP_NAME = "dduckdns"
+DEFAULT_CONFIG_FILE = xdg_config_home() / APP_NAME / "config.toml"
+
+DUCKDNS_URL = "https://www.duckdns.org/update"
 IPV6_URL = "https://ipv6.icanhazip.com"
 
 VERBOSITY_LOGGING_DEBUG = 1
 VERBOSITY_DUCKDNS_VERBOSE = 2
 
+logger = logging.getLogger(__name__)
 
-class DomainSettings(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
+
+@dataclass(frozen=True)
+class DomainSettings:
     clear: bool = False
     ip: str = ""
     ipv6: str = ""
 
 
-class Config(msgspec.Struct, forbid_unknown_fields=True, frozen=True):
+@dataclass(frozen=True)
+class Config:
     token_command: list[str]
     domains: dict[str, DomainSettings]
 
 
 def get_ipv6() -> str:
-    ipv6 = httpx.get(IPV6_URL).text.strip()
+    with urlopen(IPV6_URL) as response:
+        ipv6 = response.read().decode("utf-8").strip()
 
-    log = structlog.get_logger()
-    log.debug("Got IPv6 response", ipv6=ipv6)
+    logger.debug("Got IPv6 response: %s", ipv6)
 
     return ipv6
 
@@ -60,46 +73,68 @@ def duckdns(
     *,
     verbose: bool = False,
 ) -> None:
-    url = DUCKDNS_URL.with_query(
-        domains=domain,
-        ip=settings.ip,
-        ipv6=get_ipv6() if settings.ipv6 == "auto" else settings.ipv6,
-        token=token,
-    )
+    query_params = {
+        "domains": domain,
+        "ip": settings.ip,
+        "ipv6": get_ipv6() if settings.ipv6 == "auto" else settings.ipv6,
+        "token": token,
+    }
     if settings.clear:
-        url = url.update_query(clear="true")
+        query_params["clear"] = "true"
     # The key `verbose` with any value causes a verbose reponse.
     if verbose:
-        url = url.update_query(verbose="true")
+        query_params["verbose"] = "true"
 
-    log = structlog.get_logger()
-    log.debug("Making Duck DNS request", url=url.update_query(token="redacted"))  # noqa: S106
-    text = httpx.get(str(url)).text.strip()
-    log.debug("Got Duck DNS response", text=text)
+    debug_query_params = query_params.copy()
+    debug_query_params["token"] = "redacted"
+    debug_url = f"{DUCKDNS_URL}?{urlencode(debug_query_params)}"
+    logger.debug("Making Duck DNS request: %s", debug_url)
+
+    url = f"{DUCKDNS_URL}?{urlencode(query_params)}"
+    with urlopen(url) as response:
+        text = response.read().decode("utf-8").strip()
+    logger.debug("Got Duck DNS response: %s", text)
 
     if not re.match(r"^OK(?:\n|$)", text):
         msg = f"Unexpected response: {text!r}"
         raise ValueError(msg)
 
 
-def configure_logging(verbosity: int) -> None:
-    if sys.stderr.isatty():
-        processors = [
-            structlog.dev.ConsoleRenderer(
-                exception_formatter=structlog.dev.plain_traceback,
-            ),
-        ]
-    else:
-        processors = [
-            structlog.processors.dict_tracebacks,
-            structlog.processors.JSONRenderer(),
-        ]
+class JSONFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        log_record = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
+            "message": record.getMessage(),
+        }
 
-    structlog.configure(
-        processors,
-        wrapper_class=structlog.make_filtering_bound_logger(
-            logging.DEBUG if verbosity >= VERBOSITY_LOGGING_DEBUG else logging.INFO,
-        ),
+        if record.exc_info:
+            log_record["exception"] = self.formatException(record.exc_info)
+
+        if record.stack_info:
+            log_record["stack_info"] = self.formatStack(record.stack_info)
+
+        return json.dumps(log_record)
+
+
+def configure_logging(verbosity: int) -> None:
+    handler = logging.StreamHandler(sys.stderr)
+
+    if sys.stderr.isatty():
+        formatter = logging.Formatter("%(levelname)s: %(message)s")
+    else:
+        formatter = JSONFormatter()
+
+    handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(
+        logging.DEBUG if verbosity >= VERBOSITY_LOGGING_DEBUG else logging.INFO,
     )
 
 
@@ -122,11 +157,26 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    config = msgspec.toml.decode(args.config.read_text(), type=Config)
-    token = sp.check_output(config.token_command, text=True).strip()
-
     configure_logging(args.verbosity)
-    log = structlog.get_logger()
+
+    try:
+        config_data = tomllib.loads(args.config.read_text())
+        domains = {
+            name: DomainSettings(**settings)
+            for name, settings in config_data.get("domains", {}).items()
+        }
+        config = Config(
+            token_command=config_data["token_command"],
+            domains=domains,
+        )
+    except FileNotFoundError:
+        logger.critical("Config file not found: %s", args.config)
+        sys.exit(1)
+    except (tomllib.TOMLDecodeError, KeyError, TypeError) as e:
+        logger.critical("Failed to parse config file %s: %s", args.config, e)
+        sys.exit(1)
+
+    token = sp.check_output(config.token_command, text=True).strip()
 
     exit_status = 0
     for domain, settings in config.domains.items():
@@ -138,9 +188,9 @@ def main() -> None:
                 verbose=args.verbosity >= VERBOSITY_DUCKDNS_VERBOSE,
             )
 
-        except (httpx.HTTPError, ValueError):
+        except (URLError, ValueError):
             exit_status = 1
-            log.exception("Failed to update domain %r", domain)
+            logger.exception("Failed to update domain %r", domain)
 
     sys.exit(exit_status)
 

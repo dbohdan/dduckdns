@@ -1,8 +1,7 @@
 # dduckdns
 
 **dduckdns** is a client for the [Duck DNS](https://www.duckdns.org/) dynamic DNS service.
-dduckdns is implimented as a single-file Python script with [inline script metadata](https://packaging.python.org/en/latest/specifications/inline-script-metadata/).
-The default [shebang line](https://en.wikipedia.org/wiki/Shebang_(Unix)) is for [uv](https://github.com/astral-sh/uv).
+dduckdns is implemented as a single-file Python script with no dependencies besides the Python standard library.
 
 ## Configuration
 
